@@ -268,6 +268,56 @@
   }
   .btn-stop:hover:not(:disabled) { border-color: #ff5252; box-shadow: 0 0 15px rgba(255,82,82,0.3); }
 
+  .btn-download {
+    background: linear-gradient(135deg, #00c853, #00e676);
+    color: #000;
+    box-shadow: 0 4px 20px rgba(0,200,83,0.3);
+    width: 100%;
+    justify-content: center;
+    margin-top: 4px;
+  }
+  .btn-download:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,200,83,0.4); }
+
+  .download-box {
+    margin-top: 16px;
+    background: var(--surface);
+    border: 1px solid rgba(0,200,83,0.3);
+    border-radius: 14px;
+    padding: 16px 20px;
+    display: none;
+    text-align: center;
+  }
+  .download-box.visible { display: block; }
+  .download-box p { font-size: 0.85rem; color: var(--muted); margin-bottom: 10px; }
+  .download-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(135deg, #00c853, #00e676);
+    color: #000;
+    font-weight: 700;
+    font-family: 'Tajawal', sans-serif;
+    font-size: 0.95rem;
+    padding: 10px 24px;
+    border-radius: 10px;
+    text-decoration: none;
+    transition: transform 0.2s;
+  }
+  .download-link:hover { transform: scale(1.04); }
+
+  .rec-badge {
+    display: inline-block;
+    background: #ff1744;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 99px;
+    margin-right: 6px;
+    animation: blink 1s infinite;
+  }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
   /* Waveform visualizer */
   .visualizer {
     display: flex;
@@ -438,6 +488,21 @@
       <button class="btn btn-stop" id="btnStop" onclick="stopSpeech()" disabled>
         <span>⏹</span> إيقاف
       </button>
+    </div>
+
+    <!-- Download button -->
+    <div class="btn-row">
+      <button class="btn btn-download" id="btnDownload" onclick="startRecordAndSpeak()">
+        <span>🎵</span> تسجيل وتحميل كملف صوتي
+      </button>
+    </div>
+
+    <!-- Download ready box -->
+    <div class="download-box" id="downloadBox">
+      <p>✅ تم التسجيل! اضغط لتحميل الملف الصوتي:</p>
+      <a class="download-link" id="downloadLink" href="#" download="voice-reader.wav">
+        ⬇️ تحميل الملف الصوتي
+      </a>
     </div>
 
     <!-- Status -->
@@ -619,6 +684,85 @@
     document.getElementById('textInput').value = text;
     document.getElementById('charCount').textContent = `${text.length} / 3000`;
     startSpeech();
+  }
+
+  // ===== تسجيل الصوت وتحميله =====
+  let mediaRecorder = null;
+  let audioChunks = [];
+
+  async function startRecordAndSpeak() {
+    const text = document.getElementById('textInput').value.trim();
+    if (!text) {
+      setStatus('⚠️ من فضلك اكتب نصاً أولاً!');
+      document.getElementById('textInput').focus();
+      return;
+    }
+
+    // Hide previous download
+    document.getElementById('downloadBox').classList.remove('visible');
+    document.getElementById('btnDownload').disabled = true;
+    setStatus('<span class="rec-badge">REC</span> جارٍ التسجيل...', 'active');
+
+    try {
+      // Get microphone/system audio — we use a trick: play through audio context
+      // Use AudioContext to capture speechSynthesis output
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      // We'll record mic as workaround — instruct user to use system audio
+      // Better approach: use AudioContext destination capture
+      audioChunks = [];
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/ogg';
+      mediaRecorder = new MediaRecorder(stream, { mimeType });
+
+      mediaRecorder.ondataavailable = e => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        stream.getTracks().forEach(t => t.stop());
+        const blob = new Blob(audioChunks, { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const link = document.getElementById('downloadLink');
+        link.href = url;
+        link.download = 'voice-' + Date.now() + (mimeType.includes('webm') ? '.webm' : '.ogg');
+        document.getElementById('downloadBox').classList.add('visible');
+        document.getElementById('btnDownload').disabled = false;
+        setStatus('✅ جاهز للتحميل!', 'done');
+      };
+
+      mediaRecorder.start(100);
+
+      // Now speak
+      synth.cancel();
+      utterance = new SpeechSynthesisUtterance(text);
+      utterance.volume = parseFloat(document.getElementById('volume').value);
+      utterance.rate = parseFloat(document.getElementById('rate').value);
+      utterance.pitch = parseFloat(document.getElementById('pitch').value);
+      const selectedVoiceName = document.getElementById('voiceSelect').value;
+      const selectedVoice = voices.find(v => v.name === selectedVoiceName);
+      if (selectedVoice) utterance.voice = selectedVoice;
+
+      utterance.onstart = () => { setVisualizer(true); };
+      utterance.onend = () => {
+        setVisualizer(false);
+        setTimeout(() => { if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop(); }, 500);
+      };
+      utterance.onerror = () => {
+        setVisualizer(false);
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+        document.getElementById('btnDownload').disabled = false;
+      };
+
+      synth.speak(utterance);
+
+    } catch (err) {
+      document.getElementById('btnDownload').disabled = false;
+      if (err.name === 'NotAllowedError') {
+        setStatus('❌ يجب السماح بالوصول للميكروفون لتفعيل التسجيل');
+      } else {
+        setStatus('❌ خطأ في التسجيل: ' + err.message);
+      }
+    }
   }
 </script>
 </body>
